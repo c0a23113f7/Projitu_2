@@ -1,0 +1,511 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IPFS Real-time Pixel Art v6</title>
+    <script src="https://cdn.jsdelivr.net/npm/ipfs/dist/index.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #eef2f7;
+            --panel-bg: #ffffff;
+            --accent-color: #5c6bc0;
+            --selected-tool-bg: #e8eaf6;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg-color);
+            margin: 0; display: flex; flex-direction: column; min-height: 100vh;
+            user-select: none;
+        }
+        #status-bar {
+            background-color: #ff9800; color: white; text-align: center; padding: 5px; font-size: 0.9rem;
+            transition: background-color 0.3s; display: flex; justify-content: center; gap: 20px;
+        }
+        #status-bar.ready { background-color: var(--accent-color); }
+        #status-bar.error { background-color: #f44336; }
+        
+        .main-container {
+            display: flex; flex: 1; padding: 20px; gap: 20px; justify-content: center;
+        }
+        .control-panel {
+            background: var(--panel-bg); padding: 20px; border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05); width: 250px; flex-shrink: 0;
+        }
+        /* キャンバスエリアを相対配置にしてカーソル表示用の親にする */
+        .canvas-area {
+            background: var(--panel-bg); padding: 20px; border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05); 
+            display: flex; justify-content: center; align-items: center;
+            position: relative; 
+        }
+        
+        canvas {
+            border: 2px solid #ddd;
+            image-rendering: pixelated;
+            cursor: crosshair;
+            width: 500px; height: 500px; 
+            touch-action: none;
+            position: relative; z-index: 1;
+        }
+
+        /* 他ユーザーのカーソル */
+        .cursor {
+            position: absolute;
+            width: 10px; height: 10px;
+            border-radius: 50%;
+            border: 2px solid white;
+            pointer-events: none;
+            z-index: 10;
+            transition: transform 0.1s;
+        }
+        .cursor-label {
+            position: absolute; top: -20px; left: 0;
+            background: inherit; color: white; padding: 2px 4px;
+            border-radius: 4px; font-size: 0.7rem; white-space: nowrap;
+        }
+
+        h3 { margin: 0 0 15px 0; font-size: 1.1rem; color: #555; border-bottom: 1px solid #eee; padding-bottom: 8px;}
+        .section { margin-bottom: 25px; }
+        
+        .tool-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px; }
+        .tool-btn {
+            padding: 10px 5px; border: 1px solid #ddd; background: #f9f9f9;
+            cursor: pointer; border-radius: 4px; font-size: 1rem; text-align: center;
+            display: flex; align-items: center; justify-content: center; gap: 5px;
+            transition: all 0.2s;
+        }
+        .tool-btn:hover { background: #eee; }
+        .tool-btn.active {
+            background: var(--selected-tool-bg); border-color: var(--accent-color); color: var(--accent-color); font-weight: bold;
+            box-shadow: inset 0 0 5px rgba(0,0,0,0.1);
+        }
+
+        .color-picker-wrapper { display: flex; align-items: center; gap: 10px; margin-bottom: 15px;}
+        input[type="color"] { width: 40px; height: 40px; border: none; padding: 0; cursor: pointer; border-radius: 4px;}
+
+        button.action-btn {
+            width: 100%; padding: 10px; margin: 5px 0; border: none; border-radius: 6px;
+            background-color: var(--accent-color); color: white; font-weight: 600; cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        button.action-btn:hover:not(:disabled) { opacity: 0.9; }
+        button.action-btn:disabled { background-color: #ccc; cursor: not-allowed; }
+        
+        button.clear-btn { background-color: #ef5350; }
+        button.download-btn { background-color: #2e7d32; margin-top: 20px; }
+
+        input[type="text"] { width: 100%; padding: 8px; box-sizing: border-box; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 5px;}
+        .cid-box { font-family: monospace; background: #f4f4f4; padding: 5px; font-size: 0.8rem; word-break: break-all; border-radius: 4px;}
+        
+        .online-count { font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div id="status-bar">
+        <span id="ipfs-status">IPFS起動中...</span>
+        <span>👥 現在 <span id="user-count" class="online-count">1</span> 人で編集中</span>
+    </div>
+
+    <div class="main-container">
+        <div class="control-panel">
+            <div class="section">
+                <h3>🛠️ ツール</h3>
+                <div class="tool-buttons">
+                    <div class="tool-btn active" data-tool="pen" title="ペン">🖊️ ペン</div>
+                    <div class="tool-btn" data-tool="eraser" title="消しゴム">🧹 消し</div>
+                    <div class="tool-btn" data-tool="fill" title="塗りつぶし">🪣 全塗</div>
+                    <div class="tool-btn" data-tool="rect" title="四角塗り">⬜ 四角</div>
+                    <div class="tool-btn" data-tool="picker" title="色を吸う" style="grid-column: span 2;">🧪 スポイト</div>
+                </div>
+                
+                <div class="color-picker-wrapper">
+                    <input type="color" id="colorPicker" value="#333333">
+                    <label for="colorPicker">色を選択</label>
+                </div>
+
+                <button class="action-btn clear-btn" id="btnClear">全消去 (全員分)</button>
+                <button class="action-btn download-btn" id="btnDownload">🖼️ 画像として保存</button>
+            </div>
+
+            <div class="section">
+                <h3>💾 IPFS 保存</h3>
+                <button id="btnSave" class="action-btn" disabled>IPFSにアップロード</button>
+                <div class="cid-box" id="outputCid">未保存</div>
+            </div>
+
+            <div class="section">
+                <h3>📂 IPFS 読込</h3>
+                <input type="text" id="inputCid" placeholder="CIDを入力...">
+                <button id="btnLoad" class="action-btn" disabled>全員の画面に読込</button>
+            </div>
+        </div>
+
+        <div class="canvas-area" id="canvasArea">
+            <canvas id="myCanvas" width="40" height="40"></canvas>
+            </div>
+    </div>
+
+    <script type="module">
+        import * as Y from 'https://esm.sh/yjs'
+        import { WebrtcProvider } from 'https://esm.sh/y-webrtc'
+
+        // --- 設定 ---
+        const CANVAS_SIZE = 40; 
+        const BG_COLOR = '#ffffff';
+        
+        // ★重要変更1：部屋名が被らないように、URLにハッシュがなければランダム生成する
+        // 友達と共有するときは、URLの後ろに同じ #部屋名 をつけるか、表示されたCID等を共有してください
+        //let roomName = 'pixel-art-v6-' + (location.hash.replace('#','') || 'default-room');
+        // 【修正前】
+        // let roomName = 'pixel-art-v6-' + (location.hash.replace('#','') || 'default-room');
+
+        // 【修正後】完全に固定する
+        const roomName = 'teu-test-room-2025';
+        console.log("Room Name:", roomName);
+
+        // --- Yjs セットアップ (WebRTC設定強化版) ---
+        const ydoc = new Y.Doc();
+        
+        // ★重要変更2：異なる回線でも繋がるように「案内所(STUNサーバー)」を設定
+        const provider = new WebrtcProvider(roomName, ydoc, {
+            signaling: [
+                'wss://signaling.yjs.dev',
+                'wss://y-webrtc-signaling-eu.herokuapp.com',
+                'wss://y-webrtc-signaling-us.herokuapp.com'
+            ],
+            peerOpts: {
+                config: {
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:global.stun.twilio.com:3478' }
+                    ]
+                }
+            }
+        });
+
+        // 接続状態をログに出す
+        provider.on('status', event => {
+            console.log('WebRTC Status:', event.status); // 'connected' or 'disconnected'
+            const statusText = event.status === 'connected' ? '🟢 接続成功' : '🔴 切断中';
+            document.getElementById('ipfs-status').innerText = statusText + " (P2P)";
+        });
+
+        // ピクセルデータを共有するMap (key: "x,y", value: "#rrggbb")
+        const yPixels = ydoc.getMap('pixels');
+        
+        // 自分の情報（色とカーソル位置）を共有する
+        const awareness = provider.awareness;
+        const myColor = '#' + Math.floor(Math.random()*16777215).toString(16); 
+        awareness.setLocalStateField('user', { color: myColor, name: 'User ' + Math.floor(Math.random()*100) });
+
+        // --- DOM要素 ---
+        const canvas = document.getElementById('myCanvas');
+        const ctx = canvas.getContext('2d');
+        const canvasArea = document.getElementById('canvasArea');
+        const colorPicker = document.getElementById('colorPicker');
+        const statusBar = document.getElementById('status-bar');
+        const userCountSpan = document.getElementById('user-count');
+        const ipfsStatus = document.getElementById('ipfs-status'); // 追加
+        
+        let ipfsNode = null;
+        let isProcessing = false;
+        let currentTool = 'pen'; 
+        
+        let gridData = Array(CANVAS_SIZE).fill(null).map(() => Array(CANVAS_SIZE).fill(BG_COLOR));
+
+        let isDrawing = false;
+        let startPos = { x: 0, y: 0 };
+
+        // --- 初期描画 ---
+        redrawAll();
+
+        // --- Yjs: データ同期イベント ---
+        yPixels.observe((event) => {
+            event.changes.keys.forEach((change, key) => {
+                if (change.action === 'add' || change.action === 'update') {
+                    const color = yPixels.get(key);
+                    const [x, y] = key.split(',').map(Number);
+                    if (x >= 0 && x < CANVAS_SIZE && y >= 0 && y < CANVAS_SIZE) {
+                        gridData[x][y] = color;
+                        ctx.fillStyle = color;
+                        ctx.fillRect(x, y, 1, 1);
+                    }
+                } else if (change.action === 'delete') {
+                    const [x, y] = key.split(',').map(Number);
+                    gridData[x][y] = BG_COLOR;
+                    ctx.fillStyle = BG_COLOR;
+                    ctx.fillRect(x, y, 1, 1);
+                }
+            });
+        });
+
+        // --- Yjs: 他ユーザーのカーソル表示 ---
+        awareness.on('change', () => {
+            const states = awareness.getStates();
+            userCountSpan.innerText = states.size; 
+
+            document.querySelectorAll('.cursor').forEach(el => el.remove());
+
+            states.forEach((state, clientID) => {
+                if (clientID === awareness.clientID) return; 
+                if (state.cursor) {
+                    const cursor = document.createElement('div');
+                    cursor.className = 'cursor';
+                    cursor.style.backgroundColor = state.user.color;
+                    cursor.innerHTML = `<div class="cursor-label" style="background-color:${state.user.color}">${state.user.name}</div>`;
+                    
+                    const rect = canvas.getBoundingClientRect();
+                    const areaRect = canvasArea.getBoundingClientRect();
+                    const scale = rect.width / CANVAS_SIZE; 
+                    
+                    const left = (state.cursor.x * scale) + (rect.left - areaRect.left);
+                    const top = (state.cursor.y * scale) + (rect.top - areaRect.top);
+                    
+                    cursor.style.transform = `translate(${left}px, ${top}px)`;
+                    canvasArea.appendChild(cursor);
+                }
+            });
+        });
+
+        // --- IPFS 初期化 ---
+        async function initIPFS() {
+            try {
+                if (!window.Ipfs) { throw new Error("IPFS Script not loaded"); }
+                ipfsNode = await window.Ipfs.create({ repo: 'ipfs-' + Math.random() });
+                // ステータスバーの表示はWebRTCの状態を優先したいので、コンソールのみにするか、控えめに
+                console.log("IPFS Ready");
+                document.getElementById('btnSave').disabled = false;
+                document.getElementById('btnLoad').disabled = false;
+            } catch (err) {
+                console.error("IPFS Init Error:", err);
+            }
+        }
+        initIPFS();
+
+        // --- ツールボタン処理 ---
+        const toolButtons = document.querySelectorAll('.tool-btn');
+        toolButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                activateTool(btn.dataset.tool);
+            });
+        });
+
+        function activateTool(toolName) {
+            currentTool = toolName;
+            toolButtons.forEach(b => b.classList.remove('active'));
+            const targetBtn = document.querySelector(`.tool-btn[data-tool="${toolName}"]`);
+            if(targetBtn) targetBtn.classList.add('active');
+
+            if(toolName === 'picker') canvas.style.cursor = 'cell';
+            else canvas.style.cursor = 'crosshair';
+        }
+
+        // --- 座標計算 ---
+        function getGridPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            const scaleX = canvas.width / rect.width;
+            const scaleY = canvas.height / rect.height;
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            
+            const x = Math.floor((clientX - rect.left) * scaleX);
+            const y = Math.floor((clientY - rect.top) * scaleY);
+            return { x, y };
+        }
+
+        // --- お絵かきイベント処理 ---
+        const startDrawing = (e) => {
+            if (e.button && e.button !== 0) return;
+            const pos = getGridPos(e);
+            if (pos.x < 0 || pos.x >= CANVAS_SIZE || pos.y < 0 || pos.y >= CANVAS_SIZE) return;
+
+            if (currentTool === 'picker') {
+                const pickedColor = gridData[pos.x][pos.y];
+                colorPicker.value = pickedColor;
+                activateTool('pen'); 
+                return;
+            }
+
+            isDrawing = true;
+            startPos = pos;
+
+            if (currentTool === 'fill') {
+                const targetColor = gridData[pos.x][pos.y];
+                const selectedColor = colorPicker.value;
+                if (targetColor !== selectedColor) {
+                    ydoc.transact(() => {
+                        floodFill(pos.x, pos.y, targetColor, selectedColor);
+                    });
+                }
+                isDrawing = false;
+            } else if (currentTool === 'pen' || currentTool === 'eraser') {
+                drawAction(pos);
+            }
+        };
+
+        const moveDrawing = (e) => {
+            const pos = getGridPos(e);
+            
+            if (pos.x >= 0 && pos.x < CANVAS_SIZE && pos.y >= 0 && pos.y < CANVAS_SIZE) {
+                awareness.setLocalStateField('cursor', { x: pos.x, y: pos.y });
+            }
+
+            if (!isDrawing) return;
+            if (pos.x < 0 || pos.x >= CANVAS_SIZE || pos.y < 0 || pos.y >= CANVAS_SIZE) return;
+
+            if (currentTool === 'pen' || currentTool === 'eraser') {
+                drawAction(pos);
+            } else if (currentTool === 'rect') {
+                redrawAll(); 
+                const w = pos.x - startPos.x;
+                const h = pos.y - startPos.y;
+                const rectX = w >= 0 ? startPos.x : pos.x;
+                const rectY = h >= 0 ? startPos.y : pos.y;
+                const rectW = Math.abs(w) + 1;
+                const rectH = Math.abs(h) + 1;
+
+                ctx.fillStyle = colorPicker.value;
+                ctx.globalAlpha = 0.5; 
+                ctx.fillRect(rectX, rectY, rectW, rectH);
+                ctx.globalAlpha = 1.0; 
+            }
+        };
+
+        const endDrawing = (e) => {
+            if (!isDrawing) return;
+            
+            if (currentTool === 'rect') {
+                const pos = getGridPos(e); 
+                let endX = Math.max(0, Math.min(CANVAS_SIZE - 1, pos.x));
+                let endY = Math.max(0, Math.min(CANVAS_SIZE - 1, pos.y));
+                
+                const x1 = Math.min(startPos.x, endX);
+                const x2 = Math.max(startPos.x, endX);
+                const y1 = Math.min(startPos.y, endY);
+                const y2 = Math.max(startPos.y, endY);
+                const color = colorPicker.value;
+
+                ydoc.transact(() => {
+                    for(let x = x1; x <= x2; x++) {
+                        for(let y = y1; y <= y2; y++) {
+                            yPixels.set(`${x},${y}`, color);
+                        }
+                    }
+                });
+            }
+            isDrawing = false;
+        };
+
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', moveDrawing);
+        window.addEventListener('mouseup', endDrawing);
+        
+        // タッチ操作対応
+        canvas.addEventListener('touchstart', (e) => { e.preventDefault(); startDrawing(e); }, {passive: false});
+        canvas.addEventListener('touchmove', (e) => { e.preventDefault(); moveDrawing(e); }, {passive: false});
+        canvas.addEventListener('touchend', (e) => { e.preventDefault(); endDrawing(e); }, {passive: false});
+
+        function drawAction(pos) {
+            const color = (currentTool === 'eraser') ? BG_COLOR : colorPicker.value;
+            yPixels.set(`${pos.x},${pos.y}`, color);
+        }
+
+        function redrawAll() {
+            ctx.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+            for(let x = 0; x < CANVAS_SIZE; x++) {
+                for(let y = 0; y < CANVAS_SIZE; y++) {
+                    ctx.fillStyle = gridData[x][y];
+                    ctx.fillRect(x, y, 1, 1);
+                }
+            }
+        }
+
+        function floodFill(startX, startY, targetColor, replacementColor) {
+            let queue = [[startX, startY]];
+            let processed = new Set();
+            while (queue.length > 0) {
+                let [cx, cy] = queue.shift();
+                let key = `${cx},${cy}`;
+                if (processed.has(key)) continue;
+                if (cx < 0 || cx >= CANVAS_SIZE || cy < 0 || cy >= CANVAS_SIZE) continue;
+                if (gridData[cx][cy] !== targetColor || gridData[cx][cy] === replacementColor) continue;
+                
+                yPixels.set(key, replacementColor);
+                processed.add(key);
+                queue.push([cx + 1, cy], [cx - 1, cy], [cx, cy + 1], [cx, cy - 1]);
+            }
+        }
+
+        document.getElementById('btnClear').addEventListener('click', () => {
+            if(confirm("全員の画面から全消去しますか？")) {
+                ydoc.transact(() => {
+                    const keys = Array.from(yPixels.keys());
+                    keys.forEach(key => yPixels.delete(key));
+                });
+            }
+        });
+
+        document.getElementById('btnDownload').onclick = function() {
+            const exportScale = 20; 
+            const exportSize = CANVAS_SIZE * exportScale;
+            const exportCanvas = document.createElement('canvas');
+            exportCanvas.width = exportSize;
+            exportCanvas.height = exportSize;
+            const eCtx = exportCanvas.getContext('2d');
+            for(let x = 0; x < CANVAS_SIZE; x++) {
+                for(let y = 0; y < CANVAS_SIZE; y++) {
+                    eCtx.fillStyle = gridData[x][y];
+                    eCtx.fillRect(x * exportScale, y * exportScale, exportScale, exportScale);
+                }
+            }
+            const link = document.createElement('a');
+            link.download = 'shared-pixel-art.png';
+            link.href = exportCanvas.toDataURL("image/png");
+            link.click();
+        };
+
+        function setProcessing(processing, btnId) {
+            isProcessing = processing;
+            document.getElementById('btnSave').disabled = processing;
+            document.getElementById('btnLoad').disabled = processing;
+        }
+
+        document.getElementById('btnSave').onclick = async function() {
+            if (!ipfsNode || isProcessing) return;
+            setProcessing(true, 'btnSave');
+            try {
+                const result = await ipfsNode.add(JSON.stringify(gridData));
+                document.getElementById('outputCid').innerText = result.path;
+                alert("保存完了！CID: " + result.path);
+            } catch (error) {
+                console.error("Save Error:", error);
+                alert("保存失敗");
+            } finally { setProcessing(false, 'btnSave'); }
+        };
+
+        document.getElementById('btnLoad').onclick = async function() {
+            if (!ipfsNode || isProcessing) return;
+            const cid = document.getElementById('inputCid').value.trim();
+            if (!cid) { alert("CIDを入力してください"); return; }
+            if(!confirm("現在のキャンバスが上書きされます。よろしいですか？")) return;
+            setProcessing(true, 'btnLoad');
+            try {
+                const stream = ipfsNode.cat(cid);
+                let dataString = "";
+                for await (const chunk of stream) { dataString += new TextDecoder().decode(chunk); }
+                const loadedGrid = JSON.parse(dataString);
+                ydoc.transact(() => {
+                    for(let x = 0; x < CANVAS_SIZE; x++) {
+                        for(let y = 0; y < CANVAS_SIZE; y++) {
+                            yPixels.set(`${x},${y}`, loadedGrid[x][y]);
+                        }
+                    }
+                });
+                alert("読込完了！");
+            } catch (error) {
+                console.error("Load Error:", error);
+                alert("読込失敗");
+            } finally { setProcessing(false, 'btnLoad'); }
+        };
+    </script>
